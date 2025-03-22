@@ -20,11 +20,15 @@ CONFIG_FILE = "config.json"
 if not os.path.exists(CONFIG_FILE):
     default_config = {
         "DISCORD_TOKEN": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        "INSTANCE_ID": "i-xxxxxxxxxxxxxxxxx",
-        "AWS_REGION": "us-east-2",
         "AWS_ACCESS_KEY": "xxxxxxxxxxxxxxxxxxxx",
         "AWS_SECRET": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        "SERVER_IP": "xx.xxxxxxxx.xxx"
+        "servers": {
+            "default": {
+                "INSTANCE_ID": "i-xxxxxxxxxxxxxxxxx",
+                "AWS_REGION": "us-east-2",
+                "SERVER_IP": "xx.xxxxxxxx.xxx"
+            }
+        }
     }
     with open(CONFIG_FILE, "w") as f:
         json.dump(default_config, f, indent=4)
@@ -36,18 +40,22 @@ with open(CONFIG_FILE, "r") as f:
     config = json.load(f)
 
 TOKEN = config["DISCORD_TOKEN"]
-INSTANCE_ID = config["INSTANCE_ID"]
-REGION = config["AWS_REGION"]
 AWS_ACCESS_KEY = config["AWS_ACCESS_KEY"]
 AWS_SECRET = config["AWS_SECRET"]
-SERVER_IP = config["SERVER_IP"]
 
-ec2 = boto3.client(
-    "ec2",
-    region_name=REGION,
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET
-)
+current_server_name = list(config["servers"].keys())[0]
+
+def get_current_server():
+    return config["servers"][current_server_name]
+
+def get_ec2_client():
+    server = get_current_server()
+    return boto3.client(
+        "ec2",
+        region_name=server["AWS_REGION"],
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET
+    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -70,8 +78,9 @@ async def send_and_log(channel, *args, **kwargs):
 
 async def check_server_status(suppress_errors: bool = False) -> tuple[bool, int, list[str], object]:
     try:
-        server = JavaServer.lookup(SERVER_IP)
-        status = await asyncio.to_thread(server.status)
+        server = get_current_server()
+        mc_server = JavaServer.lookup(server["SERVER_IP"])
+        status = await asyncio.to_thread(mc_server.status)
         player_sample = status.players.sample or []
         return True, status.players.online, [p.name for p in player_sample], status
     except Exception as e:
@@ -80,15 +89,19 @@ async def check_server_status(suppress_errors: bool = False) -> tuple[bool, int,
         return False, 0, [], None
 
 def get_ec2_state() -> str:
-    response = ec2.describe_instances(InstanceIds=[INSTANCE_ID])
+    server = get_current_server()
+    ec2 = get_ec2_client()
+    response = ec2.describe_instances(InstanceIds=[server["INSTANCE_ID"]])
     return response["Reservations"][0]["Instances"][0]["State"]["Name"]
 
 async def start_server(channel: discord.TextChannel) -> None:
     try:
-        ec2.start_instances(InstanceIds=[INSTANCE_ID])
+        server = get_current_server()
+        ec2 = get_ec2_client()
+        ec2.start_instances(InstanceIds=[server["INSTANCE_ID"]])
         await send_and_log(channel, embed=discord.Embed(description="Starting server...", color=discord.Color.green()))
         waiter = ec2.get_waiter('instance_running')
-        await asyncio.to_thread(waiter.wait, InstanceIds=[INSTANCE_ID])
+        await asyncio.to_thread(waiter.wait, InstanceIds=[server["INSTANCE_ID"]])
         for _ in range(120):
             up, _, _, _ = await check_server_status(suppress_errors=True)
             if up:
@@ -173,10 +186,18 @@ async def on_message(message: discord.Message) -> None:
     if message.author == client.user:
         return
 
-    stripped_content = message.content.strip().lower()
-    if stripped_content[:2] != "s!":
+    normalized = message.content.strip().lower()
+    if not normalized.startswith("s!"):
         return
-    cmd = stripped_content[2:].strip()
+
+    args = normalized[2:].split()
+
+    if not args:
+        embed = discord.Embed(description=f"Unknown command: ` `.\nTry `s! help` for a list of commands.", color=discord.Color.red())
+        await send_and_log(channel, embed=embed)
+        return
+
+    cmd = args[0]
     if VERBOSE:
         logging.info(f"Received command from {message.author}: {cmd}")
 
@@ -184,7 +205,8 @@ async def on_message(message: discord.Message) -> None:
 
     if cmd == "status":
         embed = await get_server_status_embed()
-        await send_and_log(channel, embed=embed)
+        global current_server_name
+        await send_and_log(channel, content=f"Current server: `{current_server_name}`", embed=embed)
     elif cmd == "start":
         if get_ec2_state() == "running":
             await send_and_log(channel, embed=discord.Embed(description="Server already running!", color=discord.Color.yellow()))
@@ -202,7 +224,35 @@ async def on_message(message: discord.Message) -> None:
             else:
                 await stop_server(channel)
     elif cmd == "ip":
-        await send_and_log(channel, embed=discord.Embed(description=f"Server IP: `{SERVER_IP}`", color=discord.Color.blue()))
+        await send_and_log(channel, embed=discord.Embed(description=f"Server IP: `{server[SERVER_IP]}`", color=discord.Color.blurple()))
+    elif cmd == "mount":
+        if len(args) < 2:
+            await send_and_log(channel, embed=discord.Embed(description="Usage: `s! mount <server_name>`", color=discord.Color.red()))
+        elif get_ec2_state() == "running":
+            await send_and_log(channel, embed=discord.Embed(
+                description="Cannot change active server while the current server is online. Please stop it first.",
+                color=discord.Color.red()))
+        else:
+            new_server = args[1]
+            if new_server not in config["servers"]:
+                valid_servers = ", ".join(f"`{server}`" for server in config["servers"].keys())
+                await send_and_log(channel, embed=discord.Embed(
+                    description=f"Invalid server name. Valid servers: {valid_servers}",
+                    color=discord.Color.red()))
+            else:
+                current_server_name = new_server
+                await send_and_log(channel, embed=discord.Embed(
+                    description=f"Mounted server: `{new_server}`",
+                    color=discord.Color.green()))
+    elif cmd == "list":
+        valid_servers = list(config["servers"].keys())
+        embed = discord.Embed(
+            title="Available Servers",
+            description="\n".join(
+                [f"- {name}{' (active)' if name == current_server_name else ''}" for name in valid_servers]
+            ),
+            color=discord.Color.blurple())
+        await send_and_log(channel, embed=embed)
     elif cmd == "help":
         embed = discord.Embed(
             title="Available Commands",
@@ -211,6 +261,8 @@ async def on_message(message: discord.Message) -> None:
                 "`s! start` - Start the server.\n"
                 "`s! stop` - Stop the server if no players online.\n"
                 "`s! ip` - Show server IP.\n"
+                "`s! mount` - Change active server.\n"
+                "`s! list` - List servers.\n"
                 "`s! help` - Display this message."
             ),
             color=discord.Color.blurple()
