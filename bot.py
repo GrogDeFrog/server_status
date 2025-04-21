@@ -1,6 +1,8 @@
+import io
 import os
 import sys
 import json
+import base64
 import asyncio
 import logging
 import discord
@@ -26,7 +28,8 @@ if not os.path.exists(CONFIG_FILE):
             "default": {
                 "INSTANCE_ID": "i-xxxxxxxxxxxxxxxxx",
                 "AWS_REGION": "us-east-2",
-                "SERVER_IP": "xx.xxxxxxxx.xxx"
+                "SERVER_IP": "xx.xxxxxxxx.xxx",
+                "WAIT_TIME": 0.1
             }
         }
     }
@@ -48,6 +51,9 @@ current_server_name = list(config["servers"].keys())[0]
 def get_current_server():
     return config["servers"][current_server_name]
 
+def get_wait_time():
+    return float(config["servers"][current_server_name]["WAIT_TIME"])
+
 def get_ec2_client():
     server = get_current_server()
     return boto3.client(
@@ -64,7 +70,7 @@ client = discord.Client(intents=intents)
 CONSECUTIVE_EMPTY_THRESHOLD = 3
 consecutive_empty_checks = 0
 last_used_channel = None
-last_ec2_state = None  # For logging server status changes
+last_ec2_state = None
 
 async def send_and_log(channel, *args, **kwargs):
     msg = ""
@@ -106,7 +112,7 @@ async def start_server(channel: discord.TextChannel) -> None:
             up, _, _, _ = await check_server_status(suppress_errors=True)
             if up:
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(get_wait_time())
         embed = await get_server_status_embed()
         await send_and_log(channel, "Server started!", embed=embed)
     except Exception as e:
@@ -117,9 +123,12 @@ async def stop_server(channel: discord.TextChannel | None, auto: bool = False) -
         if channel:
             msg = "Server has been empty for 15 minutes.\nStopping..." if auto else "Stopping server..."
             await send_and_log(channel, embed=discord.Embed(description=msg, color=discord.Color.orange()))
-        ec2.stop_instances(InstanceIds=[INSTANCE_ID])
+
+        server = get_current_server()
+        ec2 = get_ec2_client()
+        ec2.stop_instances(InstanceIds=[server["INSTANCE_ID"]])
         waiter = ec2.get_waiter('instance_stopped')
-        await asyncio.to_thread(waiter.wait, InstanceIds=[INSTANCE_ID])
+        await asyncio.to_thread(waiter.wait, InstanceIds=[server["INSTANCE_ID"]])
         if channel:
             await send_and_log(channel, embed=discord.Embed(description="Server stopped!", color=discord.Color.red()))
     except Exception as e:
@@ -155,11 +164,11 @@ async def get_server_status_embed() -> discord.Embed:
         up, players, player_list, status_info = await check_server_status()
         if up and status_info:
             embed = discord.Embed(title=status_info.description, color=discord.Color.green())
-            if status_info.icon:
-                icon_base64 = status_info.icon.split(",")[1]
-                embed.set_thumbnail(url=f"data:image/png;base64,{icon_base64}")
-            else:
-                embed.set_thumbnail(url="https://www.packpng.com/static/pack.png")
+
+            embed.set_thumbnail(url="https://www.packpng.com/static/pack.png")
+
+            # Doesn't actually try to decode the favicon. Oh well.
+
             embed.add_field(name="Version", value=status_info.version.name, inline=True)
             embed.add_field(name="Player Count", value=f"{players}/{status_info.players.max}", inline=True)
             player_list_text = "\n".join(player_list) if players > 0 else "No one is online."
@@ -243,7 +252,7 @@ async def on_message(message: discord.Message) -> None:
                 current_server_name = new_server
                 await send_and_log(channel, embed=discord.Embed(
                     description=f"Mounted server: `{new_server}`",
-                    color=discord.Color.green()))
+                    color=discord.Color.blurple()))
     elif cmd == "list":
         valid_servers = list(config["servers"].keys())
         embed = discord.Embed(
