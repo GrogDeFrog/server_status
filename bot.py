@@ -99,7 +99,6 @@ class MinecraftServerBot:
                 embed = discord.Embed(title=mc_status_obj.description or "Minecraft Server", colour=discord.Color.green())
                 # Consider adding a configurable thumbnail URL per server
                 embed.set_thumbnail(url="https://www.packpng.com/static/pack.png") # Example thumbnail
-                embed.add_field(name="IP", value=f"`{self.current.ip}`", inline=True)
                 embed.add_field(name="Version", value=mc_status_obj.version.name, inline=True)
                 embed.add_field(name="Players",
                                 value=f"{online_players}/{mc_status_obj.players.max}", inline=True)
