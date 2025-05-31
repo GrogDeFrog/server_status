@@ -157,20 +157,16 @@ class MinecraftServerBot:
             await self.say(channel, embed=self.embed(
                 f"Server `{self.current.name}` is running (EC2). Waiting for Minecraft to respond...", discord.Color.yellow()))
 
-            max_wait_loops = 120 # Approx 2 minutes if wait=1.0
-            waited_loops = 0
-            for i in range(max_wait_loops):
-                waited_loops = i + 1
-                is_mc_up, *_ = await self.mc_status()
-                if is_mc_up:
-                    logging.info(f"Minecraft server at {self.current.ip} responded after ~{waited_loops * self.current.wait:.1f}s.")
+            for _ in range(120):
+                if await self.mc_status():
+                    logging.info(f"Minecraft server at {self.current.ip} responded!")
                     await self.say(channel, f"Server `{self.current.name}` started!", embed=await self.status_embed())
-                    return # Success
-                await asyncio.sleep(self.current.wait) # Use configured wait time
+                    return
+                await asyncio.sleep(1)
 
-            logging.warning(f"Minecraft server did not respond after {waited_loops * self.current.wait:.1f}s.")
+            logging.warning(f"Minecraft server did not respond after 120s!")
             await self.say(channel, embed=self.embed(
-                f"Server `{self.current.name}` started (EC2), but Minecraft did not respond. Check server logs.", discord.Color.orange()))
+                f"Server `{self.current.name}` started (EC2), but Minecraft did not respond. Maybe it's still starting?.", discord.Color.orange()))
 
         except Exception as e:
             logging.error(f"Error starting server {self.current.instance_id}: {e}")

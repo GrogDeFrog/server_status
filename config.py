@@ -12,7 +12,6 @@ class ServerCfg:
     instance_id: str
     region: str
     ip: str
-    wait: float # Time to wait between checks after starting
 
 @dataclass(frozen=True, slots=True)
 class BotCfg:
@@ -34,8 +33,7 @@ class BotCfg:
                 "servers": {"default": {
                     "INSTANCE_ID": "i-xxxxxxxxxxxx",
                     "AWS_REGION": "us-east-2",
-                    "SERVER_IP": "0.0.0.0",
-                    "WAIT_TIME": 0.1  # Default wait time in seconds
+                    "SERVER_IP": "0.0.0.0"
                  }}
             }, indent=4))
             logging.info(f"Default configuration file created at '{path}'. Edit it then restart.")
@@ -46,8 +44,7 @@ class BotCfg:
             servers = {name: ServerCfg(name,
                                        s["INSTANCE_ID"],
                                        s["AWS_REGION"],
-                                       s["SERVER_IP"],
-                                       float(s["WAIT_TIME"]))
+                                       s["SERVER_IP"])
                        for name, s in raw["servers"].items()}
 
             return BotCfg(raw["DISCORD_TOKEN"],
